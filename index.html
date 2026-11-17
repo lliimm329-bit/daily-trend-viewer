@@ -6,12 +6,12 @@
 <title>데일리 트렌드 뷰어</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #171a21; --card: #1c2029; --border: #2a2f3a;
-    --text: #e8eaf0; --muted: #9aa3b2; --accent: #ff4d6d; --accent2: #4d9fff;
+    --bg: #ffffff; --panel: #f4f5f7; --card: #ffffff; --border: #dfe2e8;
+    --text: #000000; --muted: #555b66; --accent: #ff4d6d; --accent2: #4d9fff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, "Apple SD Gothic Neo", "Pretendard", sans-serif; }
-  header { position: sticky; top: 0; z-index: 50; background: rgba(15,17,21,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   header h1 { font-size: 20px; font-weight: 800; }
   header h1 span { color: var(--accent); }
   #today { color: var(--muted); font-size: 13px; }
@@ -111,7 +111,7 @@
   .postcard { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 15px 16px; cursor: pointer; transition: border-color .12s, transform .12s; }
   .postcard:hover { border-color: var(--accent2); transform: translateY(-2px); }
   .postcard .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
-  .postcard .prank { background: var(--panel); color: #ffd166; font-weight: 800; font-size: 12px; padding: 2px 9px; border-radius: 7px; }
+  .postcard .prank { background: rgba(0,0,0,.75); color: #ffd166; font-weight: 800; font-size: 12px; padding: 2px 9px; border-radius: 7px; }
   .postcard .prank.top { background: var(--accent); color: #fff; }
   .postcard .pacct { font-size: 13px; font-weight: 700; }
   .postcard .pacct small { color: var(--muted); font-weight: 400; margin-left: 3px; }
@@ -138,20 +138,20 @@
   <div id="today"></div>
   <form id="searchForm">
     <input id="searchInput" type="search" placeholder="유튜브 검색어 입력 (예: AI 광고)">
-    <button id="searchBtn" type="submit">🔍 검색</button>
+    <button id="searchBtn" type="submit">검색</button>
   </form>
-  <button id="refreshBtn">🔄 새로고침</button>
+  <button id="refreshBtn">새로고침</button>
   <div id="updated"></div>
 </header>
 
 <nav class="tabs" id="tabs">
-  <button class="tab active" data-tab="youtube">▶ 유튜브</button>
-  <button class="tab" data-tab="shorts">⚡ 쇼츠</button>
-  <button class="tab" data-tab="ai">🤖 AI 영상</button>
-  <button class="tab" data-tab="reels">📸 릴스</button>
-  <button class="tab" data-tab="x">𝕏 트위터</button>
-  <button class="tab" data-tab="threads">🧵 스레드</button>
-  <button class="tab" data-tab="tiktok">🎵 틱톡</button>
+  <button class="tab active" data-tab="youtube">유튜브</button>
+  <button class="tab" data-tab="shorts">쇼츠</button>
+  <button class="tab" data-tab="ai">AI 영상</button>
+  <button class="tab" data-tab="reels">릴스</button>
+  <button class="tab" data-tab="x">트위터</button>
+  <button class="tab" data-tab="threads">스레드</button>
+  <button class="tab" data-tab="tiktok">틱톡</button>
 </nav>
 
 <div class="toolbar" id="toolbar">
@@ -186,7 +186,7 @@
       <h2>📰 AI 영상 뉴스 <small>구글 뉴스 · 최신순</small></h2>
       <div class="newslist" id="aiNews"></div>
     </div>
-    <p class="note">💡 인기 AI 영상은 <b>유튜브 탭 → 'AI' 카테고리</b>에서 조회수·좋아요순으로 볼 수 있어요.</p>
+    <p class="note">💡 분야별 인기 AI 영상은 <b>유튜브 · 쇼츠 탭</b>의 AI 툴 / 콘텐츠 제작 / 디자인 / 영상 제작 / 이미지 제작 카테고리에서 볼 수 있어요.</p>
     <div class="status" id="aiStatus" style="display:none"></div>
   </div>
 

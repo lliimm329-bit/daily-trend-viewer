@@ -34,20 +34,16 @@ _img_lock = threading.Lock()
 IMG_CACHE_MAX = 600
 
 # ---------------------------------------------------------------- 유튜브
-# 카테고리 → 유튜브 검색어 매핑
+# 카테고리 → 유튜브 검색어 목록 (카테고리당 3~5개). 여러 검색어 결과를 합쳐 조회수순으로 정렬
 CATEGORIES = {
-    "먹방": "먹방",
-    "뷰티/패션": "뷰티 메이크업 패션",
-    "브이로그": "브이로그",
-    "예능/코미디": "예능 웃긴 영상",
-    "영화/드라마": "영화 드라마 리뷰",
-    "테크/IT": "테크 리뷰",
-    "지식/교육": "지식 교양",
-    "여행": "여행",
-    "동물": "강아지 고양이",
+    "AI 툴": ["AI 툴 추천", "AI 툴 리뷰", "AI 자동화 툴", "ai tools review", "chatgpt 활용법"],
+    "AI 콘텐츠 제작": ["AI 콘텐츠 제작", "AI 블로그 자동화", "AI 대본 작성", "AI 유튜브 수익화"],
+    "AI 디자인": ["AI 디자인 툴", "AI 로고 만들기", "피그마 AI 디자인", "figma ai design"],
+    "AI 영상 제작": ["AI 영상 제작", "AI 영상 생성", "sora ai video", "runway ai video"],
+    "AI 이미지 제작": ["AI 이미지 제작", "미드저니 AI 이미지", "AI 그림 그리기", "stable diffusion 튜토리얼"],
+    "AI": ["AI 최신 소식", "AI 신기술 소개", "인공지능 최신 뉴스", "ChatGPT Gemini Claude 비교"],
+    "AI 이슈": ["AI 이슈", "AI 논란", "AI 업계 소식", "AI issue this week"],
 }
-# "전체" 탭은 아래 카테고리들을 합쳐 조회수순으로 재정렬
-ALL_MERGE = ["먹방", "브이로그", "예능/코미디", "뷰티/패션", "영화/드라마", "여행"]
 
 # 검색 필터 protobuf: 업로드 날짜 (2=오늘, 3=이번 주, 4=이번 달)
 PERIOD_CODE = {"day": 2, "week": 3, "month": 4}
@@ -93,7 +89,6 @@ TIKWM_BASE = "https://www.tikwm.com/api"
 TIKTOK_REGION = "KR"
 
 # ---------------------------------------------------------------- AI 영상 탭
-AI_YT_QUERIES = ["AI 영상 제작", "AI 영상 생성", "sora ai video", "runway kling veo"]
 NEWS_FEEDS = [
     ("국내", "https://news.google.com/rss/search?q=" +
      quote('AI 영상 생성 OR "AI 비디오" OR 영상생성모델') + "&hl=ko&gl=KR&ceid=KR:ko"),
@@ -260,11 +255,9 @@ def get_videos(category: str, period: str, shorts: bool, force: bool, enrich: bo
         if query:
             queries = [query]
         elif category == "전체":
-            queries = [CATEGORIES[c] for c in ALL_MERGE]
-        elif category == "AI":
-            queries = AI_YT_QUERIES
+            queries = [q for qs in CATEGORIES.values() for q in qs]
         else:
-            queries = [CATEGORIES.get(category, category)]
+            queries = CATEGORIES[category]
         vids = merge_yt_searches(queries, period, shorts)
         if enrich:
             enrich_likes(vids)
@@ -791,7 +784,7 @@ class Handler(BaseHTTPRequestHandler):
             shorts = qs.get("shorts", ["0"])[0] == "1"
             enrich = qs.get("enrich", ["0"])[0] == "1"
             query = qs.get("q", [""])[0].strip()
-            if not query and category not in ("전체", "AI") and category not in CATEGORIES:
+            if not query and category != "전체" and category not in CATEGORIES:
                 self._send(400, {"error": "unknown category"})
                 return
             videos, fetched_at = get_videos(category, period, shorts, force, enrich, query)
@@ -799,7 +792,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/categories":
-            self._send(200, {"categories": ["전체", "AI"] + list(CATEGORIES.keys())})
+            self._send(200, {"categories": ["전체"] + list(CATEGORIES.keys())})
             return
 
         if parsed.path == "/api/reels":
