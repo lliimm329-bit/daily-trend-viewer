@@ -58,7 +58,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const style = document.createElement("style");
     style.textContent =
-      "#searchForm,#refreshBtn,.addbar,#vidSortMenu,.acc-chip button{display:none!important}" +
+      "#searchForm,#refreshBtn,.addbar,#vidSortMenu,.acc-chip button,#catAdd,.chip-x,.chip-edit,#ttTagChips{display:none!important}.chip[draggable=true]{cursor:default}" +
       "#updated{margin-left:auto}";
     document.head.appendChild(style);
     const badge = document.createElement("div");

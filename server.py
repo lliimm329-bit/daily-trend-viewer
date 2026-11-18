@@ -20,6 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
 
+# macOS의 Python은 인증서 경로를 못 찾는 경우가 있어 시스템 인증서 파일을 지정합니다 (이미 지정돼 있으면 그대로 둠)
+if not os.environ.get("SSL_CERT_FILE") and os.path.exists("/etc/ssl/cert.pem"):
+    os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+
 PORT = 8778
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_TTL = 3600  # 1시간 캐시 (새로고침 버튼으로 강제 갱신 가능)
@@ -35,7 +39,8 @@ IMG_CACHE_MAX = 600
 
 # ---------------------------------------------------------------- 유튜브
 # 카테고리 → 유튜브 검색어 목록 (카테고리당 3~5개). 여러 검색어 결과를 합쳐 조회수순으로 정렬
-CATEGORIES = {
+# 기본값. 화면에서 추가/삭제한 내용은 categories.json에 저장되어 이 기본값 위에 덮어씁니다.
+DEFAULT_CATEGORIES = {
     "AI 툴": ["AI 툴 추천", "AI 툴 리뷰", "AI 자동화 툴", "ai tools review", "chatgpt 활용법"],
     "AI 콘텐츠 제작": ["AI 콘텐츠 제작", "AI 블로그 자동화", "AI 대본 작성", "AI 유튜브 수익화"],
     "AI 디자인": ["AI 디자인 툴", "AI 로고 만들기", "피그마 AI 디자인", "figma ai design"],
@@ -44,6 +49,32 @@ CATEGORIES = {
     "AI": ["AI 최신 소식", "AI 신기술 소개", "인공지능 최신 뉴스", "ChatGPT Gemini Claude 비교"],
     "AI 이슈": ["AI 이슈", "AI 논란", "AI 업계 소식", "AI issue this week"],
 }
+CATEGORIES_FILE = os.path.join(BASE_DIR, "categories.json")
+
+
+def parse_terms(value):
+    """쉼표로 구분된 문자열 또는 목록을 공백을 뗀 단어 목록으로 바꿉니다."""
+    items = value.split(",") if isinstance(value, str) else (value or [])
+    return [str(t).strip() for t in items if str(t).strip()]
+
+
+def load_categories():
+    """{이름: {"keywords": [...], "exclude": [...]}} 형태로 읽습니다. 예전 형식(목록만 있음)도 받아들입니다."""
+    try:
+        with open(CATEGORIES_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = DEFAULT_CATEGORIES
+    out = {}
+    for name, v in data.items():
+        if isinstance(v, list):
+            v = {"keywords": v, "exclude": []}
+        if v.get("keywords"):
+            out[name] = {"keywords": list(v["keywords"]), "exclude": list(v.get("exclude", []))}
+    return out
+
+
+CATEGORIES = load_categories()
 
 # 검색 필터 protobuf: 업로드 날짜 (2=오늘, 3=이번 주, 4=이번 달)
 PERIOD_CODE = {"day": 2, "week": 3, "month": 4}
@@ -87,6 +118,7 @@ DEFAULT_TIKTOK_ACCOUNTS = [
 ]
 TIKWM_BASE = "https://www.tikwm.com/api"
 TIKTOK_REGION = "KR"
+TIKTOK_TREND_SEEDS = ["일상", "먹방", "챌린지", "브이로그", "여행", "뷰티"]  # 한국 게시물이 많이 나오는 해시태그
 
 # ---------------------------------------------------------------- AI 영상 탭
 NEWS_FEEDS = [
@@ -237,15 +269,40 @@ def enrich_likes(videos, limit=45):
     return videos
 
 
-def merge_yt_searches(queries, period, shorts):
+def length_seconds(text: str) -> int:
+    """'1:02' · '1:02:03' 형태의 길이를 초로 바꿉니다. 없으면 아주 큰 값(=제외)."""
+    try:
+        total = 0
+        for part in text.split(":"):
+            total = total * 60 + int(part)
+        return total
+    except ValueError:
+        return 10**9
+
+
+def search_one(pair, period, shorts):
+    """검색 1회 후, 그 카테고리의 제외 키워드가 제목에 들어간 영상은 뺍니다."""
+    query, exclude = pair
+    low_ex = [w.lower() for w in exclude]
+    return [v for v in yt_search(query, period, shorts)
+            if not any(w in v["title"].lower() for w in low_ex)]
+
+
+def merge_yt_searches(pairs, period, shorts):
+    """pairs: [(검색어, 제외 키워드 목록), ...]"""
+    if shorts:
+        # 유튜브엔 '60초 이하' 필터가 없어서, 검색어에 #shorts를 붙여 쇼츠가 더 많이 나오게 한 뒤 길이로 거릅니다
+        pairs = [(x, ex) for q, ex in pairs for x in (q, q + " #shorts", q + " shorts")]
     with ThreadPoolExecutor(max_workers=6) as pool:
-        results = pool.map(lambda q: yt_search(q, period, shorts), queries)
+        results = pool.map(lambda pair: search_one(pair, period, shorts), pairs)
     merged, seen = [], set()
     for chunk in results:
         for v in chunk:
             if v["id"] not in seen:
                 seen.add(v["id"])
                 merged.append(v)
+    if shorts:
+        merged = [v for v in merged if length_seconds(v["length"]) <= 60]
     merged.sort(key=lambda v: v["views"], reverse=True)
     return merged
 
@@ -253,12 +310,12 @@ def merge_yt_searches(queries, period, shorts):
 def get_videos(category: str, period: str, shorts: bool, force: bool, enrich: bool = False, query: str = ""):
     def fetch():
         if query:
-            queries = [query]
+            pairs = [(query, [])]
         elif category == "전체":
-            queries = [q for qs in CATEGORIES.values() for q in qs]
+            pairs = [(q, c["exclude"]) for c in CATEGORIES.values() for q in c["keywords"]]
         else:
-            queries = CATEGORIES[category]
-        vids = merge_yt_searches(queries, period, shorts)
+            pairs = [(q, CATEGORIES[category]["exclude"]) for q in CATEGORIES[category]["keywords"]]
+        vids = merge_yt_searches(pairs, period, shorts)
         if enrich:
             enrich_likes(vids)
         return vids
@@ -620,6 +677,7 @@ def _tiktok_item(v):
         "comments": v.get("comment_count") or 0,
         "shares": v.get("share_count") or 0,
         "thumbnail": v.get("cover") or v.get("origin_cover") or "",
+        "play": v.get("play") or "",  # 영상 파일 주소(페이지 안 재생용)
         "url": "https://www.tiktok.com/@%s/video/%s" % (handle, vid),
         "id": vid,
         "createdAt": v.get("create_time") or 0,
@@ -636,34 +694,84 @@ def fetch_tiktok_user(handle: str):
     return [_tiktok_item(v) for v in vids]
 
 
-def fetch_tiktok_trending():
-    url = "%s/feed/list?region=%s&count=20" % (TIKWM_BASE, TIKTOK_REGION)
+TIKTOK_HASHTAGS_FILE = os.path.join(BASE_DIR, "tiktok_hashtags.json")
+
+
+def load_tt_hashtags():
     try:
-        d = http_json(url, timeout=15)
+        with open(TIKTOK_HASHTAGS_FILE, encoding="utf-8") as f:
+            return [t for t in json.load(f) if isinstance(t, str) and t]
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+TT_HASHTAGS = load_tt_hashtags()
+
+
+def fetch_tiktok_hashtag(tag: str):
+    """해시태그 하나의 한국 인기 게시물 TOP 30 (조회수순). 이름이 정확히 같은 해시태그를 우선합니다."""
+    try:
+        d = http_json("%s/challenge/search?keywords=%s&count=5" % (TIKWM_BASE, quote(tag)), timeout=15)
+        tags = ((d.get("data") or {}).get("challenge_list")) or []
+        exact = [t for t in tags if t.get("cha_name") == tag]
+        if not (exact or tags):
+            return []
+        pick = exact[0] if exact else max(tags, key=lambda t: t.get("view_count") or 0)
+        d = http_json("%s/challenge/posts?challenge_id=%s&count=30&cursor=0" % (TIKWM_BASE, pick["id"]), timeout=15)
     except Exception:
         return []
-    vids = d.get("data") or []
-    return [_tiktok_item(v) for v in vids]
+    vids = ((d.get("data") or {}).get("videos")) or []
+    items = [_tiktok_item(v) for v in vids if v.get("region") == TIKTOK_REGION]
+    items.sort(key=lambda p: p["views"], reverse=True)
+    return items[:30]
+
+
+def _tiktok_hashtag_posts(seed: str):
+    """해시태그(챌린지) 하나의 게시물을 가져옵니다. 한국(KR) 게시물만 남깁니다."""
+    try:
+        d = http_json("%s/challenge/search?keywords=%s&count=5" % (TIKWM_BASE, quote(seed)), timeout=15)
+        tags = ((d.get("data") or {}).get("challenge_list")) or []
+        if not tags:
+            return []
+        tag = max(tags, key=lambda t: t.get("view_count") or 0)
+        d = http_json("%s/challenge/posts?challenge_id=%s&count=30&cursor=0" % (TIKWM_BASE, tag["id"]), timeout=15)
+    except Exception:
+        return []
+    vids = ((d.get("data") or {}).get("videos")) or []
+    return [_tiktok_item(v) for v in vids if v.get("region") == TIKTOK_REGION]
+
+
+def fetch_tiktok_trending(limit=30):
+    """한국 인기 영상 TOP N. 틱톡에는 공식 지역 차트 API가 없어서, 한국 인기 해시태그들의 게시물을 모아 조회수순으로 자릅니다.
+    shortcut: 공식 실시간 차트가 아니라 인기 해시태그 게시물 기준 근사치, 공식 차트 API가 생기면 교체"""
+    with ThreadPoolExecutor(max_workers=2) as pool:  # tikwm 무료 티어 레이트리밋 때문에 동시성을 낮춤
+        chunks = list(pool.map(_tiktok_hashtag_posts, TIKTOK_TREND_SEEDS))
+    seen, unique = set(), []
+    for p in (x for chunk in chunks for x in chunk):
+        if p["id"] and p["id"] not in seen:
+            seen.add(p["id"])
+            unique.append(p)
+    unique.sort(key=lambda p: p["views"], reverse=True)
+    return unique[:limit]
 
 
 def get_tiktok(force: bool):
     accounts = load_accounts(TIKTOK_ACCOUNTS_FILE, DEFAULT_TIKTOK_ACCOUNTS)
 
     def fetch():
-        # 트렌딩(전체 인기) + 구독 계정 최신 영상을 합쳐 중복 제거.
-        # tikwm 무료 티어의 레이트리밋을 피하려 동시성을 낮춥니다.
-        posts = fetch_tiktok_trending()
+        # 인기 피드와 구독 계정 최신 영상을 따로 모읍니다. tikwm 무료 티어의 레이트리밋을 피하려 동시성을 낮춥니다.
+        trending = fetch_tiktok_trending()
         with ThreadPoolExecutor(max_workers=3) as pool:
-            for chunk in pool.map(fetch_tiktok_user, accounts):
-                posts.extend(chunk)
+            subscribed = [p for chunk in pool.map(fetch_tiktok_user, accounts) for p in chunk]
         seen, unique = set(), []
-        for p in posts:
+        for p in subscribed:
             if p["id"] and p["id"] not in seen:
                 seen.add(p["id"])
                 unique.append(p)
-        return unique
-    posts, fetched_at = cached(("tiktok", tuple(accounts)), force, fetch)
-    return posts, accounts, fetched_at
+        unique.sort(key=lambda p: p["createdAt"], reverse=True)
+        return {"trending": trending, "subscribed": unique}
+    data, fetched_at = cached(("tiktok", tuple(accounts)), force, fetch)
+    return data, accounts, fetched_at
 
 
 # ================================================================ AI 영상 탭
@@ -792,7 +900,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/categories":
-            self._send(200, {"categories": ["전체"] + list(CATEGORIES.keys())})
+            self._send(200, {"categories": ["전체"] + list(CATEGORIES.keys()), "details": CATEGORIES})
             return
 
         if parsed.path == "/api/reels":
@@ -810,9 +918,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"posts": posts, "accounts": accounts, "fetchedAt": fetched_at})
             return
 
+        if parsed.path == "/api/tiktok/hashtags":
+            self._send(200, {"hashtags": TT_HASHTAGS})
+            return
+        if parsed.path == "/api/tiktok/hashtag":
+            tag = (parse_qs(parsed.query).get("tag") or [""])[0].strip()
+            if not tag:
+                self._send(400, {"error": "tag required"})
+                return
+            force = parse_qs(parsed.query).get("force", ["0"])[0] == "1"
+            posts, fetched_at = cached(("tthash", tag), force, lambda: fetch_tiktok_hashtag(tag))
+            self._send(200, {"posts": posts, "fetchedAt": fetched_at})
+            return
         if parsed.path == "/api/tiktok":
-            posts, accounts, fetched_at = get_tiktok(force)
-            self._send(200, {"posts": posts[:100], "accounts": accounts, "fetchedAt": fetched_at})
+            data, accounts, fetched_at = get_tiktok(force)
+            self._send(200, {"trending": data["trending"], "subscribed": data["subscribed"][:100],
+                             "accounts": accounts, "fetchedAt": fetched_at})
             return
 
         if parsed.path == "/api/ai":
@@ -851,6 +972,70 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/tiktok/hashtags":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                req = json.loads(self.rfile.read(length).decode())
+            except json.JSONDecodeError:
+                self._send(400, {"error": "invalid json"})
+                return
+            name = (req.get("name") or "").strip().lstrip("#").strip()
+            if req.get("action") == "add":
+                if not name or len(name) > 30 or name in TT_HASHTAGS:
+                    self._send(400, {"error": "해시태그 이름을 확인해 주세요 (중복 불가, 30자 이내)"})
+                    return
+                TT_HASHTAGS.append(name)
+            elif req.get("action") == "remove":
+                if name not in TT_HASHTAGS:
+                    self._send(400, {"error": "없는 해시태그입니다"})
+                    return
+                TT_HASHTAGS.remove(name)
+            else:
+                self._send(400, {"error": "unknown action"})
+                return
+            with open(TIKTOK_HASHTAGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(TT_HASHTAGS, f, ensure_ascii=False, indent=2)
+            self._send(200, {"hashtags": TT_HASHTAGS})
+            return
+        if parsed.path == "/api/categories":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                req = json.loads(self.rfile.read(length).decode())
+            except json.JSONDecodeError:
+                self._send(400, {"error": "invalid json"})
+                return
+            name = (req.get("name") or "").strip()
+            if req.get("action") in ("add", "update"):
+                keywords = parse_terms(req.get("keywords"))[:5]
+                exclude = parse_terms(req.get("exclude"))[:10]
+                if not name or name == "전체" or not keywords:
+                    self._send(400, {"error": "이름과 검색 키워드 1~5개가 필요합니다"})
+                    return
+                if req["action"] == "update" and name not in CATEGORIES:
+                    self._send(400, {"error": "수정할 카테고리가 없습니다"})
+                    return
+                CATEGORIES[name] = {"keywords": keywords, "exclude": exclude}
+            elif req.get("action") == "reorder":
+                names = req.get("names") or []
+                if sorted(names) != sorted(CATEGORIES.keys()):
+                    self._send(400, {"error": "카테고리 목록이 맞지 않습니다"})
+                    return
+                items = [(n, CATEGORIES.pop(n)) for n in names]
+                CATEGORIES.update(items)  # 같은 dict 안에서 순서만 바꿈
+            elif req.get("action") == "remove":
+                if name == "전체" or name not in CATEGORIES:
+                    self._send(400, {"error": "삭제할 수 없는 카테고리입니다"})
+                    return
+                del CATEGORIES[name]
+            else:
+                self._send(400, {"error": "unknown action"})
+                return
+            with open(CATEGORIES_FILE, "w", encoding="utf-8") as f:
+                json.dump(CATEGORIES, f, ensure_ascii=False, indent=2)
+            with _cache_lock:
+                _cache.clear()  # 검색어가 바뀌었으니 캐시된 영상 목록을 버림
+            self._send(200, {"categories": ["전체"] + list(CATEGORIES.keys()), "details": CATEGORIES})
+            return
         # /api/{reels|x|threads}/accounts — 구독 계정 추가/삭제
         m = re.match(r"^/api/(reels|x|threads)/accounts$", parsed.path)
         if m:
