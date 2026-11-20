@@ -322,6 +322,73 @@ def get_videos(category: str, period: str, shorts: bool, force: bool, enrich: bo
     return cached(("yt", query or category, period, shorts, enrich), force, fetch)
 
 
+# ================================================================ 유튜브 구독 채널
+YT_ACCOUNTS_FILE = os.path.join(BASE_DIR, "yt_accounts.json")  # [{"handle", "channelId"}]
+YT_SUB_DAYS = {"day": 1, "week": 7, "month": 30}
+YT_ATOM = {"a": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015",
+           "media": "http://search.yahoo.com/mrss/"}
+
+
+def resolve_yt_channel(handle: str) -> str:
+    _, body = http_get("https://www.youtube.com/@%s" % quote(handle), timeout=15)
+    m = re.search(r'"(?:channelId|externalId)":"(UC[\w-]{22})"', body.decode("utf-8", "ignore"))
+    return m.group(1) if m else ""
+
+
+def is_yt_short(video_id: str) -> bool:
+    # shorts: 주소가 그대로 /shorts/ 로 남고, 일반 영상이면 /watch 로 넘어감 (길이 정보가 피드에 없어서 이 방법을 씀)
+    req = urllib.request.Request("https://www.youtube.com/shorts/%s" % video_id, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return "/shorts/" in resp.geturl()
+    except Exception:
+        return False
+
+
+def get_sub_videos(period: str, shorts: bool, force: bool):
+    def fetch():
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=YT_SUB_DAYS.get(period, 7))
+
+        def channel_videos(acc):
+            cid = acc.get("channelId") or ""
+            if not cid:
+                return []
+            _, body = http_get("https://www.youtube.com/feeds/videos.xml?channel_id=%s" % cid, timeout=15)
+            out = []
+            for e in ET.fromstring(body).findall("a:entry", YT_ATOM):
+                vid = e.findtext("yt:videoId", "", YT_ATOM)
+                pub = e.findtext("a:published", "", YT_ATOM)
+                try:
+                    when = datetime.datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if not vid or when < cutoff:
+                    continue
+                stats = e.find("media:group/media:community/media:statistics", YT_ATOM)
+                out.append({
+                    "id": vid, "title": e.findtext("a:title", "", YT_ATOM) or "(제목 없음)",
+                    "channel": e.findtext("a:author/a:name", "", YT_ATOM),
+                    "views": int(stats.get("views", 0)) if stats is not None else 0,
+                    "likes": 0, "comments": 0, "length": "",
+                    "thumbnail": "https://i.ytimg.com/vi/%s/hqdefault.jpg" % vid,
+                    "published": pub,
+                })
+            return out
+
+        vids = []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for got in pool.map(channel_videos, list(YT_ACCOUNTS)):
+                vids.extend(got)
+        if shorts:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                keep = list(pool.map(lambda v: is_yt_short(v["id"]), vids))
+            vids = [v for v, k in zip(vids, keep) if k]
+        vids.sort(key=lambda v: v["views"], reverse=True)
+        return vids
+
+    return cached(("ytsub", period, shorts), force, fetch)
+
+
 # ================================================================ 인스타그램 릴스
 def load_accounts(path, defaults):
     try:
@@ -337,6 +404,9 @@ def load_accounts(path, defaults):
 def save_accounts(path, accounts):
     with open(path, "w") as f:
         json.dump(accounts, f, ensure_ascii=False, indent=2)
+
+
+YT_ACCOUNTS = load_accounts(YT_ACCOUNTS_FILE, [])  # 위에서 정의한 유튜브 구독 채널 목록
 
 
 # 계정 목록을 쓰는 소스별 설정 (파일 경로, 기본 계정)
@@ -886,6 +956,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, f.read(), "text/html; charset=utf-8")
             return
 
+        if parsed.path == "/api/yt/accounts":
+            self._send(200, {"accounts": [a["handle"] for a in YT_ACCOUNTS]})
+            return
+
+        if parsed.path == "/api/videos" and qs.get("mode", ["keyword"])[0] == "sub":
+            period = qs.get("period", ["week"])[0]
+            shorts = qs.get("shorts", ["0"])[0] == "1"
+            videos, fetched_at = get_sub_videos(period, shorts, force)
+            self._send(200, {"videos": videos[:60], "fetchedAt": fetched_at})
+            return
+
         if parsed.path == "/api/videos":
             category = qs.get("category", ["전체"])[0]
             period = qs.get("period", ["week"])[0]
@@ -972,6 +1053,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/yt/accounts":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                req = json.loads(self.rfile.read(length).decode())
+            except json.JSONDecodeError:
+                self._send(400, {"error": "invalid json"})
+                return
+            handle = (req.get("username") or "").strip().lstrip("@")
+            if req.get("action") == "add":
+                if not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", handle) or any(a["handle"].lower() == handle.lower() for a in YT_ACCOUNTS):
+                    self._send(400, {"error": "채널 핸들을 확인해 주세요 (@ 뒤의 영문·숫자 이름, 중복 불가)"})
+                    return
+                try:
+                    cid = resolve_yt_channel(handle)
+                except Exception:
+                    cid = ""
+                if not cid:
+                    self._send(400, {"error": "채널을 찾지 못했습니다. 핸들을 다시 확인해 주세요"})
+                    return
+                YT_ACCOUNTS.append({"handle": handle, "channelId": cid})
+            elif req.get("action") == "remove":
+                before = len(YT_ACCOUNTS)
+                YT_ACCOUNTS[:] = [a for a in YT_ACCOUNTS if a["handle"].lower() != handle.lower()]
+                if len(YT_ACCOUNTS) == before:
+                    self._send(400, {"error": "없는 채널입니다"})
+                    return
+            else:
+                self._send(400, {"error": "unknown action"})
+                return
+            save_accounts(YT_ACCOUNTS_FILE, YT_ACCOUNTS)
+            with _cache_lock:
+                for key in [k for k in _cache if k[0] == "ytsub"]:
+                    del _cache[key]
+            self._send(200, {"accounts": [a["handle"] for a in YT_ACCOUNTS]})
+            return
         if parsed.path == "/api/tiktok/hashtags":
             length = int(self.headers.get("Content-Length", 0))
             try:

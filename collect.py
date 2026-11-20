@@ -45,7 +45,14 @@ def collect_videos():
         for (cat, period, shorts), vids, fetched in pool.map(one, jobs):
             name = "videos_%s_%s_%s.json" % (CATEGORY_SLUGS[cat], period, "1" if shorts else "0")
             write_json(name, {"videos": vids, "fetchedAt": fetched})
-    print("유튜브/쇼츠: %d개 조합 저장" % len(jobs))
+    # 구독 채널 탭 (채널 목록은 서버의 yt_accounts.json을 따릅니다)
+    for period in PERIODS:
+        for shorts in (False, True):
+            vids, fetched = server.get_sub_videos(period, shorts, False)
+            write_json("videos_sub_%s_%s.json" % (period, "1" if shorts else "0"),
+                       {"videos": vids[:60], "fetchedAt": fetched})
+    write_json("yt_accounts.json", {"accounts": [a["handle"] for a in server.YT_ACCOUNTS]})
+    print("유튜브/쇼츠: %d개 조합 + 구독 채널 저장" % len(jobs))
 
 
 def download_images(items, field):

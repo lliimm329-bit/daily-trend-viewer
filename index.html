@@ -38,6 +38,14 @@
   .chip-edit { margin-left: 6px; opacity: .6; font-size: 11px; }
   .chip-edit:hover { opacity: 1; color: var(--accent); }
   .chip[draggable="true"] { cursor: grab; }
+  .modeseg { display: inline-flex; gap: 2px; flex: none; background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+  .modeseg .mode { border: none; background: transparent; color: var(--muted); padding: 5px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .modeseg .mode.active { background: var(--accent); color: #fff; }
+  .save-btn { margin-left: auto; flex: none; background: transparent; border: none; padding: 2px; line-height: 0; color: var(--muted); cursor: pointer; border-radius: 6px; }
+  .save-btn:hover, .save-btn.on { color: var(--accent); }
+  .save-btn svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+  .save-btn.on svg { fill: currentColor; }
+  .pdate { font-size: 12px; color: var(--muted); }
   #catAdd { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .periods { display: flex; gap: 4px; margin-left: 18px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
   .period { padding: 5px 12px; border-radius: 8px; background: transparent; border: none; color: var(--muted); font-size: 13px; cursor: pointer; }
@@ -184,10 +192,16 @@
   <button class="tab" data-tab="x">Twitter</button>
   <button class="tab" data-tab="threads">Threads</button>
   <button class="tab" data-tab="tiktok">TikTok</button>
+  <button class="tab" data-tab="collect">Collect</button>
 </nav>
 
 <div class="toolbar" id="toolbar">
+  <div class="modeseg" id="modeSeg">
+    <button class="mode active" data-mode="keyword">키워드</button>
+    <button class="mode" data-mode="sub">구독</button>
+  </div>
   <div class="chips" id="chips"></div>
+  <button class="chip" id="catEdit">수정</button>
   <button class="chip" id="catAdd" onclick="addCategory()">+ 추가</button>
   <div class="periods" id="periods">
     <button class="period" data-period="day">오늘</button>
@@ -313,6 +327,12 @@
     <div class="status" id="ttSubEmpty" style="display:none">구독 계정의 최신 영상이 없습니다.</div>
     <div class="grid shorts" id="ttSubGrid"></div>
   </div>
+  <div id="collectView" class="ext-section" style="display:none">
+    <p class="note">각 탭의 게시물 날짜 오른쪽 저장 아이콘을 누르면 여기에 모입니다. 저장한 내용은 이 브라우저에만 보관됩니다.</p>
+    <div class="sortbar"><span class="sortcount" id="collectCount"></span></div>
+    <div class="status" id="collectStatus" style="display:none">아직 저장한 게시물이 없습니다.</div>
+    <div class="grid" id="collectGrid"></div>
+  </div>
 </main>
 
 <div id="modal">
@@ -326,7 +346,7 @@
 </div>
 
 <script>
-const state = { tab: 'youtube', category: '전체', period: 'week', categories: ['전체'], search: '' };
+const state = { tab: 'youtube', category: '전체', period: 'week', categories: ['전체'], search: '', ytMode: 'keyword', ytAccounts: [] };
 
 const fmt = n => {
   if (n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, '') + '억회';
@@ -347,6 +367,10 @@ async function initCategories() {
 function renderChips() {
   const box = document.getElementById('chips');
   box.innerHTML = '';
+  const isSub = state.ytMode === 'sub';
+  document.getElementById('catAdd').style.display = isSub ? 'none' : '';
+  document.getElementById('catEdit').style.display = !isSub && state.category !== '전체' ? '' : 'none';
+  if (isSub) { renderYtAccountChips(box); return; }
   state.categories.forEach(c => {
     const b = document.createElement('button');
     b.className = 'chip' + (c === state.category && !state.search ? ' active' : '');
@@ -356,10 +380,6 @@ function renderChips() {
       b.ondragstart = e => { dragName = c; e.dataTransfer.effectAllowed = 'move'; };
       b.ondragover = e => e.preventDefault();
       b.ondrop = e => { e.preventDefault(); reorderCategory(dragName, c); };
-      const ed = document.createElement('span');
-      ed.className = 'chip-edit'; ed.textContent = '수정'; ed.title = '키워드 수정';
-      ed.onclick = e => { e.stopPropagation(); editCategory(c); };
-      b.appendChild(ed);
       const x = document.createElement('span');
       x.className = 'chip-x'; x.textContent = '×'; x.title = '카테고리 삭제';
       x.onclick = e => { e.stopPropagation(); removeCategory(c); };
@@ -374,6 +394,39 @@ function renderChips() {
   });
 }
 let dragName = null;
+function renderYtAccountChips(box) {
+  state.ytAccounts.forEach(h => {
+    const c = document.createElement('span');
+    c.className = 'chip active';
+    c.textContent = '@' + h;
+    const x = document.createElement('span');
+    x.className = 'chip-x'; x.textContent = '×'; x.title = '구독 해제';
+    x.onclick = e => { e.stopPropagation(); ytAccount('remove', h); };
+    c.appendChild(x);
+    box.appendChild(c);
+  });
+  const add = document.createElement('button');
+  add.className = 'chip'; add.id = 'ytAccAdd'; add.textContent = '+ 채널';
+  add.onclick = () => {
+    const h = (prompt('구독할 유튜브 채널 핸들 (예: @channelname)') || '').trim();
+    if (h) ytAccount('add', h);
+  };
+  box.appendChild(add);
+}
+async function loadYtAccounts() {
+  try {
+    const res = await fetch('/api/yt/accounts');
+    state.ytAccounts = (await res.json()).accounts || [];
+  } catch (e) { state.ytAccounts = []; }
+}
+async function ytAccount(action, username) {
+  const res = await fetch('/api/yt/accounts', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, username }) });
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || '처리하지 못했습니다'); return; }
+  state.ytAccounts = data.accounts;
+  renderChips(); loadVideos(true);
+}
 async function reorderCategory(from, to) {
   if (!from || from === to) return;
   const order = state.categories.filter(c => c !== '전체' && c !== from);
@@ -439,11 +492,18 @@ async function loadVideos(force = false) {
   status.textContent = wantLikes
     ? '좋아요 수를 불러오는 중입니다... (영상마다 조회하느라 조금 걸려요)'
     : '영상을 불러오는 중입니다...';
+  const isSub = state.ytMode === 'sub';
   const q = new URLSearchParams({
-    category: state.category, period: state.period,
+    mode: isSub ? 'sub' : 'keyword', category: state.category, period: state.period,
     shorts: state.tab === 'shorts' ? '1' : '0', force: force ? '1' : '0',
-    enrich: wantLikes ? '1' : '0', q: state.search
+    enrich: wantLikes && !isSub ? '1' : '0', q: isSub ? '' : state.search
   });
+  if (isSub && !state.ytAccounts.length) {
+    status.style.display = 'block';
+    status.textContent = '구독 채널을 추가하면 최신 영상이 여기에 모입니다. (+ 채널 버튼)';
+    grid.innerHTML = ''; vidData = [];
+    return;
+  }
   try {
     const res = await fetch('/api/videos?' + q);
     const data = await res.json();
@@ -468,14 +528,14 @@ function renderVideos() {
   grid.innerHTML = '';
   sorted.forEach((v, i) => grid.appendChild(videoCard(v, i + 1)));
 }
-function videoCard(v, rank) {
+function videoCard(v, rank, vertical = state.tab === 'shorts') {
   const el = document.createElement('div');
-  el.className = 'card' + (rank <= 5 ? ' hot' : '');
+  el.className = 'card' + (rank && rank <= 5 ? ' hot' : '');
   const likeStr = v.likes ? `<span class="views">👍 ${fmt2(v.likes)}</span>` : '';
   el.innerHTML = `
     <div style="position:relative">
       <img class="thumb" loading="lazy" src="${v.thumbnail}" alt="">
-      <div class="rank${rank <= 5 ? ' top' : ''}">${rank}위</div>
+      ${rank ? `<div class="rank${rank <= 5 ? ' top' : ''}">${rank}위</div>` : ''}
       ${v.length ? `<div class="len" style="bottom:8px">${v.length}</div>` : ''}
     </div>
     <div class="meta">
@@ -483,12 +543,13 @@ function videoCard(v, rank) {
       <div class="sub">
         <span class="${vidState.sort === 'views' ? 'views' : ''}">조회수 ${fmt(v.views)}</span>
         ${likeStr}
-        <span class="chn"></span><span>${v.published || ''}</span>
+        <span class="chn"></span><span class="pdate">${dateLabel(v.published)}</span>
       </div>
     </div>`;
   el.querySelector('.title').textContent = v.title;
   el.querySelector('.chn').textContent = v.channel;
-  el.onclick = () => openPlayer(v.id, state.tab === 'shorts');
+  el.querySelector('.sub').appendChild(saveButton(vertical ? 'shorts' : 'yt', v));
+  el.onclick = () => openPlayer(v.id, vertical);
   return el;
 }
 
@@ -598,29 +659,32 @@ function renderReels() {
   const label = { views: '조회수', likes: '좋아요', comments: '댓글' };
   const sorted = reelsData.slice().sort((a, b) => (b[f] || 0) - (a[f] || 0));
   grid.innerHTML = '';
-  sorted.forEach((r, i) => {
-    const el = document.createElement('div');
-    el.className = 'card' + (i < 5 ? ' hot' : '');
-    el.innerHTML = `
-      <div style="position:relative">
-        <img class="thumb" loading="lazy" src="/api/img?u=${encodeURIComponent(r.thumbnail)}" alt="">
-        <div class="rank${i < 5 ? ' top' : ''}">${i + 1}위</div>
-      </div>
-      <div class="meta">
-        <div class="title"></div>
-        <div class="sub">
-          ${r.views ? `<span class="${f === 'views' ? 'views' : ''}">👁️ ${fmt2(r.views)}</span>` : ''}
-          <span class="${f === 'likes' ? 'views' : ''}">❤️ ${fmt2(r.likes || 0)}</span>
-          <span class="${f === 'comments' ? 'views' : ''}">💬 ${fmt2(r.comments || 0)}</span>
-        </div>
-        <div class="sub" style="margin-top:3px"><span>@${r.account}</span></div>
-      </div>`;
-    el.querySelector('.title').textContent = r.title;
-    el.onclick = () => window.open(r.url, '_blank');
-    grid.appendChild(el);
-  });
+  sorted.forEach((r, i) => grid.appendChild(reelCard(r, i + 1)));
   document.getElementById('reelsCount').textContent =
     `${label[f]} 기준 · 총 ${sorted.length}개`;
+}
+function reelCard(r, rank) {
+  const f = reelsState.sort;
+  const el = document.createElement('div');
+  el.className = 'card' + (rank && rank <= 5 ? ' hot' : '');
+  el.innerHTML = `
+    <div style="position:relative">
+      <img class="thumb" loading="lazy" src="/api/img?u=${encodeURIComponent(r.thumbnail)}" alt="">
+      ${rank ? `<div class="rank${rank <= 5 ? ' top' : ''}">${rank}위</div>` : ''}
+    </div>
+    <div class="meta">
+      <div class="title"></div>
+      <div class="sub">
+        ${r.views ? `<span class="${f === 'views' ? 'views' : ''}">👁️ ${fmt2(r.views)}</span>` : ''}
+        <span class="${f === 'likes' ? 'views' : ''}">❤️ ${fmt2(r.likes || 0)}</span>
+        <span class="${f === 'comments' ? 'views' : ''}">💬 ${fmt2(r.comments || 0)}</span>
+      </div>
+      <div class="sub" style="margin-top:3px"><span>@${r.account}</span><span class="pdate">${dateLabel(r.takenAt)}</span></div>
+    </div>`;
+  el.querySelector('.title').textContent = r.title;
+  el.querySelector('.sub:last-child').appendChild(saveButton('reels', r));
+  el.onclick = () => window.open(r.url, '_blank');
+  return el;
 }
 function renderAccountChips(accounts) {
   const box = document.getElementById('accChips');
@@ -699,13 +763,13 @@ function sortField(kind) {
 }
 function postCard(p, rank, kind) {
   const el = document.createElement('div');
-  el.className = 'postcard' + (rank <= 5 ? ' hot' : '');
+  el.className = 'postcard' + (rank && rank <= 5 ? ' hot' : '');
   const rt = kind === 'threads' ? (p.reposts || 0) : (p.retweets || 0);
   const rtIcon = kind === 'threads' ? '🔁' : '🔁';
   const active = social[kind].sort;
   el.innerHTML = `
     <div class="phead">
-      <span class="prank${rank <= 5 ? ' top' : ''}">${rank}위</span>
+      ${rank ? `<span class="prank${rank <= 5 ? ' top' : ''}">${rank}위</span>` : ''}
       <span class="pacct">${kind === 'x' ? '@' : '@'}${p.account}</span>
     </div>
     <div class="ptext"></div>
@@ -716,7 +780,9 @@ function postCard(p, rank, kind) {
       ${rt ? `<span class="${active === 'reposts' ? 'hot' : ''}">${rtIcon} <b>${fmt2(rt)}</b></span>` : ''}
       ${p.views ? `<span class="${active === 'views' ? 'hot' : ''}">👁️ <b>${fmt2(p.views)}</b></span>` : ''}
       <span style="margin-left:auto">원문 보기 ↗</span>
+      <span class="pdate">${dateLabel(p.createdAt)}</span>
     </div>`;
+  el.querySelector('.pstats').appendChild(saveButton(kind, p));
   el.querySelector('.ptext').textContent = p.text;
   el.onclick = () => window.open(p.url, '_blank');
   return el;
@@ -967,9 +1033,10 @@ function ttCard(t, rank) {
         <span>❤️ ${fmt2(t.likes)}</span>
         <span>💬 ${fmt2(t.comments)}</span>
       </div>
-      <div class="sub" style="margin-top:3px"><span>@${t.account}</span></div>
+      <div class="sub" style="margin-top:3px"><span>@${t.account}</span><span class="pdate">${dateLabel(t.createdAt)}</span></div>
     </div>`;
   el.querySelector('.tt-title').textContent = t.title;
+  el.querySelector('.meta .sub:last-child').appendChild(saveButton('tiktok', t));
   el.querySelector('.tt-title').onclick = () => window.open(t.url, '_blank');  // 제목 → 틱톡 페이지
   const play = el.querySelector('.tt-play');
   if (play) play.onclick = () => {  // 재생 버튼 → 이 페이지 안에서 소리와 함께 재생
@@ -1034,7 +1101,68 @@ initFoldMenu('ttSortMenu', [
   { key: 'comments', label: '댓글 순', icon: '💬' },
 ], tiktokState, () => renderTikTok());
 
+/* ---------- 저장(Collect) ---------- */
+// 저장 목록은 이 브라우저의 localStorage에 게시물 전체 정보로 보관합니다 (정적 사이트에서도 동작)
+const SAVE_KEY = 'dtv_saved_v1';
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY) || '[]'); } catch (e) { return []; }
+}
+function writeSaved(list) {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(list)); }
+  catch (e) { alert('브라우저 저장 공간에 저장하지 못했습니다'); }
+}
+const savedKey = (kind, item) => kind + ':' + (item.id || item.url);
+const isSaved = (kind, item) => loadSaved().some(s => s.key === savedKey(kind, item));
+function saveButton(kind, item) {
+  const b = document.createElement('button');
+  b.className = 'save-btn' + (isSaved(kind, item) ? ' on' : '');
+  b.title = '저장'; b.setAttribute('aria-label', '저장');
+  b.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 3h12v18l-6-4-6 4z"/></svg>';
+  b.onclick = e => {
+    e.stopPropagation();  // 카드 클릭(재생·원문 열기)과 분리
+    let list = loadSaved();
+    const key = savedKey(kind, item);
+    if (list.some(s => s.key === key)) list = list.filter(s => s.key !== key);
+    else list.unshift({ key, kind, item, savedAt: Date.now() });
+    writeSaved(list);
+    b.classList.toggle('on', isSaved(kind, item));
+    if (state.tab === 'collect') renderCollect();
+  };
+  return b;
+}
+function dateLabel(v) {  // 유튜브 원문 문구("3 days ago")는 그대로, 숫자/ISO/RFC 날짜는 "N일 전"으로
+  if (!v) return '';
+  if (typeof v === 'number') return timeAgo(v);
+  if (/^\d+$/.test(v)) return timeAgo(Number(v));
+  const ms = Date.parse(v);
+  return isNaN(ms) ? v : timeAgo(ms / 1000);
+}
+function renderCollect() {
+  const list = loadSaved();
+  const grid = document.getElementById('collectGrid');
+  grid.innerHTML = '';
+  document.getElementById('collectCount').textContent = list.length ? `저장 ${list.length}개` : '';
+  document.getElementById('collectStatus').style.display = list.length ? 'none' : 'block';
+  list.forEach(s => {
+    let el = null;
+    if (s.kind === 'yt') el = videoCard(s.item, 0, false);
+    else if (s.kind === 'shorts') el = videoCard(s.item, 0, true);
+    else if (s.kind === 'reels') el = reelCard(s.item, 0);
+    else if (s.kind === 'x' || s.kind === 'threads') el = postCard(s.item, 0, s.kind);
+    else if (s.kind === 'tiktok') el = ttCard(s.item, 0);
+    if (el) grid.appendChild(el);
+  });
+}
+
 /* ---------- 탭 / 기간 / 새로고침 ---------- */
+document.getElementById('modeSeg').onclick = e => {
+  const b = e.target.closest('.mode');
+  if (!b) return;
+  state.ytMode = b.dataset.mode;
+  document.querySelectorAll('.mode').forEach(m => m.classList.toggle('active', m === b));
+  renderChips(); loadVideos();
+};
+document.getElementById('catEdit').onclick = () => editCategory(state.category);
 document.getElementById('tabs').onclick = e => {
   const btn = e.target.closest('.tab');
   if (!btn) return;
@@ -1048,12 +1176,14 @@ document.getElementById('tabs').onclick = e => {
   document.getElementById('xView').style.display = state.tab === 'x' ? 'block' : 'none';
   document.getElementById('threadsView').style.display = state.tab === 'threads' ? 'block' : 'none';
   document.getElementById('tiktokView').style.display = state.tab === 'tiktok' ? 'block' : 'none';
+  document.getElementById('collectView').style.display = state.tab === 'collect' ? 'block' : 'none';
   if (isVideo) loadVideos();
   else if (state.tab === 'ai') loadAI();
   else if (state.tab === 'reels') loadReels();
   else if (state.tab === 'x') loadSocial('x');
   else if (state.tab === 'threads') loadSocial('threads');
   else if (state.tab === 'tiktok') loadTikTok();
+  else if (state.tab === 'collect') renderCollect();
 };
 document.getElementById('periods').onclick = e => {
   const btn = e.target.closest('.period');
@@ -1072,7 +1202,7 @@ document.getElementById('searchForm').addEventListener('submit', e => {
     state.tab = 'youtube';
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'youtube'));
     document.getElementById('toolbar').style.display = 'flex';
-    ['videoView','aiView','reelsView','xView','threadsView','tiktokView'].forEach(id =>
+    ['videoView','aiView','reelsView','xView','threadsView','tiktokView','collectView'].forEach(id =>
       document.getElementById(id).style.display = id === 'videoView' ? 'block' : 'none');
   }
   renderChips();
@@ -1085,9 +1215,11 @@ document.getElementById('refreshBtn').onclick = () => {
   else if (state.tab === 'x') loadSocial('x', true);
   else if (state.tab === 'threads') loadSocial('threads', true);
   else if (state.tab === 'tiktok') loadTikTok(true);
+  else if (state.tab === 'collect') renderCollect();
   else loadVideos(true);
 };
 
+loadYtAccounts();
 initCategories().then(() => loadVideos());
 </script>
 </body>

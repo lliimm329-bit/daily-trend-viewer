@@ -24,11 +24,16 @@
     else if (path === "/api/videos") {
       if ((u.searchParams.get("q") || "").trim())
         return jsonResp({ videos: [], fetchedAt: Date.now() / 1000 });
-      const cat = SLUG[u.searchParams.get("category") || "전체"] || "all";
       const period = u.searchParams.get("period") || "week";
       const shorts = u.searchParams.get("shorts") === "1" ? "1" : "0";
-      target = `data/videos_${cat}_${period}_${shorts}.json`;
+      if (u.searchParams.get("mode") === "sub") {
+        target = `data/videos_sub_${period}_${shorts}.json`;
+      } else {
+        const cat = SLUG[u.searchParams.get("category") || "전체"] || "all";
+        target = `data/videos_${cat}_${period}_${shorts}.json`;
+      }
     }
+    else if (path === "/api/yt/accounts") target = "data/yt_accounts.json";
     else if (path === "/api/ai") target = "data/ai.json";
     else if (path === "/api/reels") target = "data/reels.json";
     else if (path === "/api/x") target = "data/x.json";
@@ -58,7 +63,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const style = document.createElement("style");
     style.textContent =
-      "#searchForm,#refreshBtn,.addbar,#vidSortMenu,.acc-chip button,#catAdd,.chip-x,.chip-edit,#ttTagChips{display:none!important}.chip[draggable=true]{cursor:default}" +
+      "#searchForm,#refreshBtn,.addbar,#vidSortMenu,.acc-chip button,#catAdd,#catEdit,#ytAccAdd,.chip-x,.chip-edit,#ttTagChips{display:none!important}.chip[draggable=true]{cursor:default}" +
       "#updated{margin-left:auto}";
     document.head.appendChild(style);
     const badge = document.createElement("div");
